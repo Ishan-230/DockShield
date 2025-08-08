@@ -1,0 +1,11 @@
+# Ignore system files
+*.log
+*.tmp
+
+# Ignore SSH keys
+*.pem
+*.pub
+
+# Ignore editor configs
+.vscode/
+.idea/
