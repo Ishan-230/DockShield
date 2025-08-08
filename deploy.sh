@@ -35,39 +35,40 @@ secure_server() {
 
     NEW_USER="dockshield"
 
-    # Create new user if it doesn't exist
+    # Create user if not exists
     if id "$NEW_USER" &>/dev/null; then
-        echo -e "${YELLOW}User '$NEW_USER' already exists. Skipping creation.${NC}"
+        echo -e "${YELLOW}User '$NEW_USER' already exists. Skipping creation...${NC}"
     else
-        adduser --gecos "" "$NEW_USER"
-        echo -e "${YELLOW}Set a strong password for $NEW_USER:${NC}"
-        passwd "$NEW_USER"
+        adduser "$NEW_USER"
+        usermod -aG sudo "$NEW_USER"
+        echo -e "${GREEN}User '$NEW_USER' created and added to sudo group.${NC}"
     fi
 
-    # Add to sudoers
-    usermod -aG sudo "$NEW_USER"
+    # Setup SSH keys for new user
+    if [ ! -d "/home/$NEW_USER/.ssh" ]; then
+        mkdir -p /home/$NEW_USER/.ssh
+        chmod 700 /home/$NEW_USER/.ssh
+    fi
+
+    if [ -f "/root/.ssh/authorized_keys" ]; then
+        cp /root/.ssh/authorized_keys /home/$NEW_USER/.ssh/
+        chmod 600 /home/$NEW_USER/.ssh/authorized_keys
+        chown -R "$NEW_USER":"$NEW_USER" /home/$NEW_USER/.ssh
+        echo -e "${GREEN}SSH key copied to '$NEW_USER'.${NC}"
+    else
+        echo -e "${YELLOW}No root authorized_keys found. You'll need to set up SSH manually for '$NEW_USER'.${NC}"
+    fi
 
     # Disable root SSH login
-    echo -e "${YELLOW}Disabling root SSH login...${NC}"
-    sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-
-    # Optional: Enforce key-based authentication
-    echo -e "${YELLOW}Do you want to enforce key-based SSH authentication only? (y/n): ${NC}"
-    read -r ENFORCE_KEYS
-    if [[ "$ENFORCE_KEYS" == "y" ]]; then
-        sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-        sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-    fi
-
-    # Restart SSH service
-    echo -e "${YELLOW}Restarting SSH service...${NC}"
-    if [ "$OS" == "Debian" ]; then
-        systemctl restart ssh
+    SSHD_CONFIG="/etc/ssh/sshd_config"
+    if grep -q "^PermitRootLogin" "$SSHD_CONFIG"; then
+        sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' "$SSHD_CONFIG"
     else
-        systemctl restart sshd
+        echo "PermitRootLogin no" >> "$SSHD_CONFIG"
     fi
 
-    echo -e "${GREEN}Secure user setup complete.${NC}"
+    systemctl restart sshd
+    echo -e "${GREEN}Root SSH login disabled.${NC}"
 }
 
 # --- Phase 2: Firewall Configuration ---
