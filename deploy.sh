@@ -32,7 +32,42 @@ echo -e "${YELLOW}Detected OS: $OS${NC}"
 # --- Phase 1: Secure Server Setup ---
 secure_server() {
     echo -e "${GREEN}[1/5] Setting up secure user...${NC}"
-    # Placeholder: create user, disable root SSH login
+
+    NEW_USER="dockshield"
+
+    # Create new user if it doesn't exist
+    if id "$NEW_USER" &>/dev/null; then
+        echo -e "${YELLOW}User '$NEW_USER' already exists. Skipping creation.${NC}"
+    else
+        adduser --gecos "" "$NEW_USER"
+        echo -e "${YELLOW}Set a strong password for $NEW_USER:${NC}"
+        passwd "$NEW_USER"
+    fi
+
+    # Add to sudoers
+    usermod -aG sudo "$NEW_USER"
+
+    # Disable root SSH login
+    echo -e "${YELLOW}Disabling root SSH login...${NC}"
+    sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+
+    # Optional: Enforce key-based authentication
+    echo -e "${YELLOW}Do you want to enforce key-based SSH authentication only? (y/n): ${NC}"
+    read -r ENFORCE_KEYS
+    if [[ "$ENFORCE_KEYS" == "y" ]]; then
+        sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+        sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    fi
+
+    # Restart SSH service
+    echo -e "${YELLOW}Restarting SSH service...${NC}"
+    if [ "$OS" == "Debian" ]; then
+        systemctl restart ssh
+    else
+        systemctl restart sshd
+    fi
+
+    echo -e "${GREEN}Secure user setup complete.${NC}"
 }
 
 # --- Phase 2: Firewall Configuration ---
