@@ -76,8 +76,9 @@ secure_server() {
         echo "PermitRootLogin no" >> "$SSHD_CONFIG"
     fi
 
-    # Optionally enforce key-based authentication (ask user)
-    read -r -p "$(echo -e ${YELLOW}Do you want to enforce key-based SSH authentication only? (y/n): ${NC})" ENFORCE_KEYS
+    # Optionally enforce key-based authentication
+    echo -e "${YELLOW}Do you want to enforce key-based SSH authentication only? (y/n): ${NC}"
+    read -r ENFORCE_KEYS
     if [[ "$ENFORCE_KEYS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
         if grep -q "^PasswordAuthentication" "$SSHD_CONFIG"; then
             sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
@@ -87,7 +88,7 @@ secure_server() {
         echo "$(date -Iseconds) - Enforced key-based SSH authentication" >> "$LOGFILE"
     fi
 
-    # Restart SSH service (service name differs)
+    # Restart SSH service
     if [ "$OS" == "Debian" ]; then
         systemctl restart ssh || systemctl restart ssh.service
     else
@@ -108,13 +109,16 @@ configure_firewall() {
     ALLOW_HTTP="n"
     ALLOW_HTTPS="n"
 
-    read -r -p "$(echo -e ${YELLOW}Enter SSH port to allow (default 22): ${NC})" INPUT_SSH_PORT
+    echo -e "${YELLOW}Enter SSH port to allow (default 22): ${NC}"
+    read -r INPUT_SSH_PORT
     if [[ -n "$INPUT_SSH_PORT" ]]; then
         SSH_PORT="$INPUT_SSH_PORT"
     fi
 
-    read -r -p "$(echo -e ${YELLOW}Allow HTTP (port 80)? (y/n, default n): ${NC})" ALLOW_HTTP
-    read -r -p "$(echo -e ${YELLOW}Allow HTTPS (port 443)? (y/n, default n): ${NC})" ALLOW_HTTPS
+    echo -e "${YELLOW}Allow HTTP (port 80)? (y/n, default n): ${NC}"
+    read -r ALLOW_HTTP
+    echo -e "${YELLOW}Allow HTTPS (port 443)? (y/n, default n): ${NC}"
+    read -r ALLOW_HTTPS
 
     if [ "$OS" == "Debian" ]; then
         # Install ufw if missing
@@ -193,19 +197,167 @@ configure_firewall() {
 # --- Phase 3: SSH Hardening ---
 harden_ssh() {
     echo -e "${GREEN}[3/5] Hardening SSH configuration...${NC}"
-    # Placeholder: disable root login, change default port, key-based auth
+    echo "$(date -Iseconds) - Phase3: SSH hardening start" >> "$LOGFILE"
+
+    SSHD_CONFIG="/etc/ssh/sshd_config"
+
+    # Backup original SSH config
+    cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak"
+    echo "$(date -Iseconds) - Backed up $SSHD_CONFIG to ${SSHD_CONFIG}.bak" >> "$LOGFILE"
+
+    # Apply hardened settings
+    cat << EOF > "$SSHD_CONFIG"
+# Hardened SSH configuration by DockShield
+Port $SSH_PORT
+Protocol 2
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+AllowUsers dockshield
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 0
+UseDNS no
+GSSAPIAuthentication no
+EOF
+
+    # Validate SSH config
+    if sshd -t; then
+        echo -e "${GREEN}SSH configuration validated successfully.${NC}"
+        echo "$(date -Iseconds) - SSH configuration validated" >> "$LOGFILE"
+    else
+        echo -e "${RED}SSH configuration test failed. Restoring backup...${NC}"
+        cp "${SSHD_CONFIG}.bak" "$SSHD_CONFIG"
+        echo "$(date -Iseconds) - SSH configuration test failed, restored backup" >> "$LOGFILE"
+        exit 1
+    fi
+
+    # Restart SSH service
+    if [ "$OS" == "Debian" ]; then
+        systemctl restart ssh || systemctl restart ssh.service
+    else
+        systemctl restart sshd || systemctl restart sshd.service
+    fi
+
+    echo -e "${GREEN}SSH hardening complete.${NC}"
+    echo "$(date -Iseconds) - Phase3 complete" >> "$LOGFILE"
 }
 
 # --- Phase 4: Install Docker ---
 install_docker() {
     echo -e "${GREEN}[4/5] Installing Docker...${NC}"
-    # Placeholder: install docker & docker-compose
+    echo "$(date -Iseconds) - Phase4: Docker installation start" >> "$LOGFILE"
+
+    if command -v docker &>/dev/null; then
+        echo -e "${YELLOW}Docker already installed. Skipping...${NC}"
+        echo "$(date -Iseconds) - Docker already installed" >> "$LOGFILE"
+    else
+        if [ "$OS" == "Debian" ]; then
+            apt-get update
+            apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+            curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+            apt-get update
+            apt-get install -y docker-ce docker-ce-cli containerd.io
+            echo "$(date -Iseconds) - Docker installed on Debian" >> "$LOGFILE"
+        else
+            if command -v yum &>/dev/null; then
+                yum install -y yum-utils
+                yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+                yum install -y docker-ce docker-ce-cli containerd.io
+            elif command -v dnf &>/dev/null; then
+                dnf install -y dnf-plugins-core
+                dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+                dnf install -y docker-ce docker-ce-cli containerd.io
+            fi
+            echo "$(date -Iseconds) - Docker installed on RHEL/CentOS" >> "$LOGFILE"
+        fi
+
+        systemctl enable docker
+        systemctl start docker
+        echo "$(date -Iseconds) - Docker service enabled and started" >> "$LOGFILE"
+    fi
+
+    # Install Docker Compose
+    if command -v docker-compose &>/dev/null; then
+        echo -e "${YELLOW}Docker Compose already installed. Skipping...${NC}"
+        echo "$(date -Iseconds) - Docker Compose already installed" >> "$LOGFILE"
+    else
+        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+        echo "$(date -Iseconds) - Docker Compose installed" >> "$LOGFILE"
+    fi
+
+    # Add dockshield user to docker group
+    usermod -aG docker dockshield
+    echo "$(date -Iseconds) - Added dockshield user to docker group" >> "$LOGFILE"
+
+    # Run a demo container (optional)
+    echo -e "${YELLOW}Run a demo Nginx container? (y/n): ${NC}"
+    read -r RUN_DEMO
+    if [[ "$RUN_DEMO" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        docker run -d -p 80:80 nginx
+        echo -e "${GREEN}Demo Nginx container running on port 80.${NC}"
+        echo "$(date -Iseconds) - Demo Nginx container started" >> "$LOGFILE"
+    fi
+
+    echo -e "${GREEN}Docker installation complete.${NC}"
+    echo "$(date -Iseconds) - Phase4 complete" >> "$LOGFILE"
 }
 
 # --- Phase 5: SSL Setup ---
 setup_ssl() {
     echo -e "${GREEN}[5/5] Setting up SSL certificates...${NC}"
-    # Placeholder: install certbot & configure SSL
+    echo "$(date -Iseconds) - Phase5: SSL setup start" >> "$LOGFILE"
+
+    echo -e "${YELLOW}Do you want to set up SSL with Let's Encrypt? (y/n): ${NC}"
+    read -r SETUP_LE
+    if [[ "$SETUP_LE" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        echo -e "${YELLOW}Enter your domain name (e.g., example.com): ${NC}"
+        read -r DOMAIN
+        if [ -z "$DOMAIN" ]; then
+            echo -e "${RED}No domain provided. Skipping SSL setup.${NC}"
+            echo "$(date -Iseconds) - No domain provided for SSL" >> "$LOGFILE"
+            return
+        fi
+
+        echo -e "${YELLOW}Enter your email for Let's Encrypt notifications: ${NC}"
+        read -r EMAIL
+        if [ -z "$EMAIL" ]; then
+            echo -e "${RED}No email provided. Skipping SSL setup.${NC}"
+            echo "$(date -Iseconds) - No email provided for SSL" >> "$LOGFILE"
+            return
+        fi
+
+        if [ "$OS" == "Debian" ]; then
+            apt-get update
+            apt-get install -y certbot python3-certbot-nginx
+            echo "$(date -Iseconds) - Certbot installed on Debian" >> "$LOGFILE"
+        else
+            if command -v yum &>/dev/null; then
+                yum install -y certbot python3-certbot-nginx
+            elif command -v dnf &>/dev/null; then
+                dnf install -y certbot python3-certbot-nginx
+            fi
+            echo "$(date -Iseconds) - Certbot installed on RHEL/CentOS" >> "$LOGFILE"
+        fi
+
+        # Run Certbot
+        certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}SSL certificate installed for $DOMAIN.${NC}"
+            echo "$(date -Iseconds) - SSL certificate installed for $DOMAIN" >> "$LOGFILE"
+        else
+            echo -e "${RED}Failed to install SSL certificate. Please check Certbot logs.${NC}"
+            echo "$(date -Iseconds) - SSL certificate installation failed" >> "$LOGFILE"
+        fi
+    else
+        echo -e "${YELLOW}Skipping SSL setup.${NC}"
+        echo "$(date -Iseconds) - SSL setup skipped" >> "$LOGFILE"
+    fi
+
+    echo -e "${GREEN}SSL setup complete.${NC}"
+    echo "$(date -Iseconds) - Phase5 complete" >> "$LOGFILE"
 }
 
 # Execute in Order
