@@ -12,12 +12,14 @@ NC='\033[0m' # No Color
 
 LOGFILE="/var/log/dockshield_deploy.log"
 
-echo -e "${GREEN}=== DockShield: Starting Automated Secure Server Deployment ===${NC}"
+# Ensure log file directory exists
+mkdir -p "$(dirname "$LOGFILE")"
 echo "$(date -Iseconds) - Starting DockShield" >> "$LOGFILE"
 
 # --- Check Root Privileges ---
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}Error: Please run as root (sudo).${NC}"
+    echo "$(date -Iseconds) - Error: Script not run as root" >> "$LOGFILE"
     exit 1
 fi
 
@@ -28,6 +30,7 @@ elif [ -f /etc/redhat-release ]; then
     OS="RHEL"
 else
     echo -e "${RED}Unsupported OS. DockShield supports Debian/Ubuntu & RHEL/CentOS.${NC}"
+    echo "$(date -Iseconds) - Error: Unsupported OS" >> "$LOGFILE"
     exit 1
 fi
 echo -e "${YELLOW}Detected OS: $OS${NC}"
@@ -450,15 +453,86 @@ run_demo_container() {
     echo "$(date -Iseconds) - Phase8 complete" >> "$LOGFILE"
 }
 
-# Execute in Order
-secure_server
-configure_firewall
-harden_ssh
-install_docker
-setup_ssl
-setup_backups
-setup_auto_updates
-run_demo_container
+# --- Run All Phases ---
+run_all_phases() {
+    echo -e "${GREEN}Running all phases sequentially...${NC}"
+    echo "$(date -Iseconds) - Running all phases" >> "$LOGFILE"
+    secure_server
+    configure_firewall
+    harden_ssh
+    install_docker
+    setup_ssl
+    setup_backups
+    setup_auto_updates
+    run_demo_container
+    echo -e "${GREEN}All phases completed!${NC}"
+    echo "$(date -Iseconds) - All phases completed" >> "$LOGFILE"
+}
+
+# --- Interactive CLI Menu ---
+echo -e "${GREEN}=== Welcome to DockShield: Secure Server Deployment ===${NC}"
+PS3="$(echo -e "${YELLOW}Select an option: ${NC}")"
+options=(
+    "Run All Phases"
+    "1. Setup Secure User"
+    "2. Configure Firewall"
+    "3. Harden SSH"
+    "4. Install Docker"
+    "5. Setup SSL Certificates"
+    "6. Setup Daily Backups"
+    "7. Setup Auto Updates"
+    "8. Run Demo Container"
+    "Exit"
+)
+
+select opt in "${options[@]}"; do
+    case $opt in
+        "Run All Phases")
+            run_all_phases
+            break
+            ;;
+        "1. Setup Secure User")
+            secure_server
+            echo -e "${GREEN}Phase 1 completed. Returning to menu...${NC}"
+            ;;
+        "2. Configure Firewall")
+            configure_firewall
+            echo -e "${GREEN}Phase 2 completed. Returning to menu...${NC}"
+            ;;
+        "3. Harden SSH")
+            harden_ssh
+            echo -e "${GREEN}Phase 3 completed. Returning to menu...${NC}"
+            ;;
+        "4. Install Docker")
+            install_docker
+            echo -e "${GREEN}Phase 4 completed. Returning to menu...${NC}"
+            ;;
+        "5. Setup SSL Certificates")
+            setup_ssl
+            echo -e "${GREEN}Phase 5 completed. Returning to menu...${NC}"
+            ;;
+        "6. Setup Daily Backups")
+            setup_backups
+            echo -e "${GREEN}Phase 6 completed. Returning to menu...${NC}"
+            ;;
+        "7. Setup Auto Updates")
+            setup_auto_updates
+            echo -e "${GREEN}Phase 7 completed. Returning to menu...${NC}"
+            ;;
+        "8. Run Demo Container")
+            run_demo_container
+            echo -e "${GREEN}Phase 8 completed. Returning to menu...${NC}"
+            ;;
+        "Exit")
+            echo -e "${GREEN}Exiting DockShield. Goodbye!${NC}"
+            echo "$(date -Iseconds) - User exited script" >> "$LOGFILE"
+            break
+            ;;
+        *)
+            echo -e "${RED}Invalid option. Please select a number from 1 to ${#options[@]}.${NC}"
+            ;;
+    esac
+done
 
 echo -e "${GREEN}=== DockShield Deployment Complete! ===${NC}"
 echo "$(date -Iseconds) - Deployment complete" >> "$LOGFILE"
