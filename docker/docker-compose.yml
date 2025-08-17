@@ -1,3 +1,4 @@
+cat << 'EOF' > docker/docker-compose.yml
 version: '3'
 services:
   nginx:
@@ -6,3 +7,4 @@ services:
       - "80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
+EOF
