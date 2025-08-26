@@ -76,6 +76,7 @@ wait_for_apt() {
         echo -e "${YELLOW}Checking for APT lock...${NC}"
         local timeout=300  # Wait up to 5 minutes
         local counter=0
+        local kill_attempted=false
         while [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ]; do
             if [ $counter -ge $timeout ]; then
                 echo -e "${RED}Timeout waiting for APT lock. Another process may be using APT. Please try again later or resolve manually.${NC}"
@@ -83,6 +84,23 @@ wait_for_apt() {
                 echo "$(date -Iseconds) - Timeout waiting for APT lock" >> "$LOGFILE"
                 return 1
             fi
+
+            # After 30 seconds, ask to kill the process
+            if [ $counter -ge 30 ] && [ "$kill_attempted" = false ]; then
+                echo -e "${YELLOW}APT lock persists. Checking for holding processes...${NC}"
+                ps aux | grep -E '[a]pt|[d]pkg' | grep -v grep
+                read -r -p "$(echo -e "${YELLOW}Do you want to kill the holding process(es)? (y/n, default n): ${NC}")" KILL_PROCESS
+                if [[ "$KILL_PROCESS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+                    pkill -9 -f 'apt|dpkg'
+                    rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock
+                    echo -e "${GREEN}Killed holding processes and removed locks.${NC}"
+                    echo "$(date -Iseconds) - Killed APT holding processes and removed locks" >> "$LOGFILE"
+                    kill_attempted=true
+                else
+                    echo -e "${YELLOW}Continuing to wait...${NC}"
+                fi
+            fi
+
             echo -e "${YELLOW}APT lock detected. Waiting...${NC}"
             sleep 5
             counter=$((counter + 5))
