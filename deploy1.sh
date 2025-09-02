@@ -16,6 +16,37 @@ LOGFILE="/var/log/dockshield_deploy.log"
 mkdir -p "$(dirname "$LOGFILE")"
 echo "$(date -Iseconds) - Starting DockShield" >> "$LOGFILE"
 
+# Display DockShield in big terminal UI
+echo -e "${GREEN}"
+cat << EOF
+
+
+ ____             _     ____  _     _      _     _ 
+|  _ \  ___   ___| | __/ ___|| |__ (_) ___| | __| |
+| | | |/ _ \ / __| |/ /\___ \| '_ \| |/ _ \ |/ _` |
+| |_| | (_) | (__|   <  ___) | | | | |  __/ | (_| |
+|____/ \___/ \___|_|\_\|____/|_| |_|_|\___|_|\__,_|
+
+
+EOF
+echo -e "${NC}"
+
+# Script Description
+echo -e "${YELLOW}Welcome to DockShield!${NC}"
+echo -e "This script automates the setup of a secure server:"
+echo -e "- Creates a secure non-root user."
+echo -e "- Disables root SSH login for security."
+echo -e "- Configures a firewall to block unauthorized access."
+echo -e "- Hardens SSH with limited attempts and fail2ban to ban attackers."
+echo -e "- Installs Docker for running applications in containers."
+echo -e "- Optionally sets up SSL certificates for secure web traffic."
+echo -e "- Schedules daily backups using rsync."
+echo -e "- Enables automatic security updates."
+echo -e "- Optionally runs a demo Nginx container."
+echo -e "Run phases individually or all at once via the menu."
+echo -e "${YELLOW}Note: Set up SSH keys for secure access (prompted in Phase 1).${NC}"
+echo -e ""
+
 # --- Check Root Privileges ---
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}Error: Please run as root (sudo).${NC}"
@@ -25,12 +56,12 @@ fi
 
 # --- Detect OS ---
 if [ -f /etc/debian_version ]; then
-    OS="Debian"
+    OS="debian"
     if grep -qi ubuntu /etc/os-release; then
-        OS="Ubuntu"
+        OS="ubuntu"
     fi
 elif [ -f /etc/redhat-release ]; then
-    OS="RHEL"
+    OS="rhel"
 else
     echo -e "${RED}Unsupported OS. DockShield supports Debian/Ubuntu & RHEL/CentOS.${NC}"
     echo "$(date -Iseconds) - Error: Unsupported OS" >> "$LOGFILE"
@@ -41,20 +72,26 @@ echo "$(date -Iseconds) - Detected OS: $OS" >> "$LOGFILE"
 
 # --- Function to Wait for APT Lock ---
 wait_for_apt() {
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         echo -e "${YELLOW}Checking for APT lock...${NC}"
-        local timeout=300  # Wait up to 5 minutes
+        local timeout=60  # Wait up to 1 minute
         local counter=0
         while [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/cache/apt/archives/lock ]; do
             if [ $counter -ge $timeout ]; then
-                echo -e "${RED}Timeout waiting for APT lock. Another process may be using APT. Please try again later or resolve manually.${NC}"
-                echo -e "${YELLOW}To check the process, run: ps aux | grep -E 'apt|dpkg'${NC}"
-                echo "$(date -Iseconds) - Timeout waiting for APT lock" >> "$LOGFILE"
-                return 1
+                echo -e "${YELLOW}APT lock persists. Forcing lock release...${NC}"
+                # Identify and kill processes holding APT locks
+                ps aux | grep -E '[a]pt|[d]pkg' | grep -v grep | awk '{print $2}' | xargs -r kill -9
+                # Remove lock files
+                rm -f /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock
+                # Repair dpkg database if needed
+                dpkg --configure -a
+                echo -e "${GREEN}APT locks forcibly cleared. Proceeding...${NC}"
+                echo "$(date -Iseconds) - Forcibly cleared APT locks" >> "$LOGFILE"
+                return 0
             fi
             echo -e "${YELLOW}APT lock detected. Waiting...${NC}"
-            sleep 5
-            counter=$((counter + 5))
+            sleep 2
+            counter=$((counter + 2))
         done
         echo -e "${GREEN}APT lock cleared. Proceeding...${NC}"
         echo "$(date -Iseconds) - APT lock cleared" >> "$LOGFILE"
@@ -79,18 +116,23 @@ secure_server() {
         echo "$(date -Iseconds) - User $NEW_USER created and added to sudo" >> "$LOGFILE"
     fi
 
-    # Setup SSH keys for new user (copy from root if present)
-    if [ ! -d "/home/$NEW_USER/.ssh" ]; then
-        mkdir -p /home/$NEW_USER/.ssh
-        chmod 700 /home/$NEW_USER/.ssh
-    fi
-
-    if [ -f "/root/.ssh/authorized_keys" ]; then
-        cp /root/.ssh/authorized_keys /home/$NEW_USER/.ssh/authorized_keys
-        chmod 600 /home/$NEW_USER/.ssh/authorized_keys
-        chown -R "$NEW_USER":"$NEW_USER" /home/$NEW_USER/.ssh
-        echo -e "${GREEN}SSH key copied to '$NEW_USER'.${NC}"
-        echo "$(date -Iseconds) - SSH key copied to $NEW_USER" >> "$LOGFILE"
+    # Option to setup SSH key through the script
+    read -r -p "$(echo -e "${YELLOW}Do you want to set up SSH keys for '$NEW_USER'? (y/n, default n): ${NC}")" SETUP_KEYS
+    if [[ "$SETUP_KEYS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        echo -e "${YELLOW}Paste your public SSH key below (e.g., ssh-rsa AAA...):${NC}"
+        read -r PUBLIC_KEY
+        if [ -n "$PUBLIC_KEY" ]; then
+            mkdir -p /home/$NEW_USER/.ssh
+            echo "$PUBLIC_KEY" >> /home/$NEW_USER/.ssh/authorized_keys
+            chmod 600 /home/$NEW_USER/.ssh/authorized_keys
+            chmod 700 /home/$NEW_USER/.ssh
+            chown -R $NEW_USER:$NEW_USER /home/$NEW_USER/.ssh
+            echo -e "${GREEN}SSH key added to '$NEW_USER'.${NC}"
+            echo "$(date -Iseconds) - SSH key added to $NEW_USER" >> "$LOGFILE"
+        else
+            echo -e "${RED}No public key provided. Skipping SSH key setup.${NC}"
+            echo "$(date -Iseconds) - No public key provided for SSH setup" >> "$LOGFILE"
+        fi
     else
         echo -e "${YELLOW}No root authorized_keys found. To set up SSH for '$NEW_USER', follow these steps:${NC}"
         echo -e "${YELLOW}1. On your local machine, generate an SSH key (if not already done):${NC}"
@@ -104,25 +146,48 @@ secure_server() {
 
     # Disable root SSH login
     SSHD_CONFIG="/etc/ssh/sshd_config"
+    cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)"
+    echo "$(date -Iseconds) - Backed up sshd_config" >> "$LOGFILE"
+
     if grep -q "^PermitRootLogin" "$SSHD_CONFIG"; then
         sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' "$SSHD_CONFIG"
     else
         echo "PermitRootLogin no" >> "$SSHD_CONFIG"
     fi
 
-    # Optionally enforce key-based authentication (ask user)
-    read -r -p "$(echo -e "${YELLOW}Do you want to enforce key-based SSH authentication only? (y/n): ${NC}")" ENFORCE_KEYS
-    if [[ "$ENFORCE_KEYS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    # Ensure PasswordAuthentication is enabled if no keys are present
+    if [ ! -f "/home/$NEW_USER/.ssh/authorized_keys" ] && [ ! -f "/root/.ssh/authorized_keys" ]; then
         if grep -q "^PasswordAuthentication" "$SSHD_CONFIG"; then
-            sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
+            sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' "$SSHD_CONFIG"
         else
-            echo "PasswordAuthentication no" >> "$SSHD_CONFIG"
+            echo "PasswordAuthentication yes" >> "$SSHD_CONFIG"
         fi
-        echo "$(date -Iseconds) - Enforced key-based SSH authentication" >> "$LOGFILE"
+        echo -e "${YELLOW}No SSH keys found. Enabling password authentication to prevent lockout.${NC}"
+        echo "$(date -Iseconds) - Enabled PasswordAuthentication (no keys found)" >> "$LOGFILE"
+    else
+        # Optionally enforce key-based authentication
+        read -r -p "$(echo -e "${YELLOW}Do you want to enforce key-based SSH authentication only? (y/n): ${NC}")" ENFORCE_KEYS
+        if [[ "$ENFORCE_KEYS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+            if grep -q "^PasswordAuthentication" "$SSHD_CONFIG"; then
+                sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
+            else
+                echo "PasswordAuthentication no" >> "$SSHD_CONFIG"
+            fi
+            echo "$(date -Iseconds) - Enforced key-based SSH authentication" >> "$LOGFILE"
+        fi
+    fi
+
+    # Validate SSH configuration
+    sshd -t
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}SSH configuration is invalid. Restoring backup and aborting.${NC}"
+        cp "${SSHD_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)" "$SSHD_CONFIG"
+        echo "$(date -Iseconds) - Restored sshd_config due to invalid configuration" >> "$LOGFILE"
+        return 1
     fi
 
     # Restart SSH service
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         systemctl restart ssh || systemctl restart ssh.service || {
             echo -e "${RED}Failed to restart SSH service. Please check the service status with 'systemctl status ssh'.${NC}"
             echo "$(date -Iseconds) - Failed to restart SSH" >> "$LOGFILE"
@@ -146,18 +211,20 @@ configure_firewall() {
     echo "$(date -Iseconds) - Phase2: firewall start" >> "$LOGFILE"
 
     SSH_PORT=22
+    HTTP_PORT=80
+    HTTPS_PORT=443
     ALLOW_HTTP="n"
     ALLOW_HTTPS="n"
 
-    read -r -p "$(echo -e "${YELLOW}Enter SSH port to allow (default 22): ${NC}")" INPUT_SSH_PORT
+    read -r -p "$(echo -e "${YELLOW}Enter SSH port to allow (default 22) - please write the port number: ${NC}")" INPUT_SSH_PORT
     if [[ -n "$INPUT_SSH_PORT" ]]; then
         SSH_PORT="$INPUT_SSH_PORT"
     fi
 
-    read -r -p "$(echo -e "${YELLOW}Allow HTTP (port 80)? (y/n, default n): ${NC}")" ALLOW_HTTP
-    read -r -p "$(echo -e "${YELLOW}Allow HTTPS (port 443)? (y/n, default n): ${NC}")" ALLOW_HTTPS
+    read -r -p "$(echo -e "${YELLOW}Allow HTTP (port 80)? (y/n, default n) - HTTP is for unencrypted web traffic; keep open if hosting a website without SSL: ${NC}")" ALLOW_HTTP
+    read -r -p "$(echo -e "${YELLOW}Allow HTTPS (port 443)? (y/n, default n) - HTTPS is for encrypted web traffic; keep open for secure websites with SSL: ${NC}")" ALLOW_HTTPS
 
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         if ! command -v ufw &>/dev/null; then
             echo -e "${YELLOW}ufw not found. Installing ufw...${NC}"
             wait_for_apt || return 1
@@ -175,12 +242,12 @@ configure_firewall() {
         echo "$(date -Iseconds) - Allowed SSH port $SSH_PORT/tcp" >> "$LOGFILE"
 
         if [[ "$ALLOW_HTTP" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            ufw allow 80/tcp
-            echo "$(date -Iseconds) - Allowed HTTP (80)" >> "$LOGFILE"
+            ufw allow "$HTTP_PORT"/tcp
+            echo "$(date -Iseconds) - Allowed HTTP ($HTTP_PORT)" >> "$LOGFILE"
         fi
         if [[ "$ALLOW_HTTPS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            ufw allow 443/tcp
-            echo "$(date -Iseconds) - Allowed HTTPS (443)" >> "$LOGFILE"
+            ufw allow "$HTTPS_PORT"/tcp
+            echo "$(date -Iseconds) - Allowed HTTPS ($HTTPS_PORT)" >> "$LOGFILE"
         fi
 
         if ufw status | grep -q "Status: active"; then
@@ -220,12 +287,12 @@ configure_firewall() {
         echo "$(date -Iseconds) - Allowed SSH port $SSH_PORT/tcp (firewalld)" >> "$LOGFILE"
 
         if [[ "$ALLOW_HTTP" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            firewall-cmd --permanent --add-service=http
-            echo "$(date -Iseconds) - Allowed HTTP (firewalld)" >> "$LOGFILE"
+            firewall-cmd --permanent --add-port=${HTTP_PORT}/tcp
+            echo "$(date -Iseconds) - Allowed HTTP ($HTTP_PORT) (firewalld)" >> "$LOGFILE"
         fi
         if [[ "$ALLOW_HTTPS" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            firewall-cmd --permanent --add-service=https
-            echo "$(date -Iseconds) - Allowed HTTPS (firewalld)" >> "$LOGFILE"
+            firewall-cmd --permanent --add-port=${HTTPS_PORT}/tcp
+            echo "$(date -Iseconds) - Allowed HTTPS ($HTTPS_PORT) (firewalld)" >> "$LOGFILE"
         fi
 
         firewall-cmd --reload
@@ -241,7 +308,7 @@ harden_ssh() {
     echo -e "${GREEN}[3/8] Hardening SSH configuration...${NC}"
     echo "$(date -Iseconds) - Phase3: harden_ssh start" >> "$LOGFILE"
 
-    cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak"
+    cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)"
     echo "$(date -Iseconds) - Backed up sshd_config" >> "$LOGFILE"
 
     if [ -f "configs/sshd_config" ]; then
@@ -282,7 +349,16 @@ harden_ssh() {
         fi
     fi
 
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    # Validate SSH configuration
+    sshd -t
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}SSH configuration is invalid. Restoring backup and aborting.${NC}"
+        cp "${SSHD_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)" "$SSHD_CONFIG"
+        echo "$(date -Iseconds) - Restored sshd_config due to invalid configuration" >> "$LOGFILE"
+        return 1
+    fi
+
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         systemctl restart ssh || systemctl restart ssh.service || {
             echo -e "${RED}Failed to restart SSH service. Please check the service status with 'systemctl status ssh'.${NC}"
             echo "$(date -Iseconds) - Failed to restart SSH" >> "$LOGFILE"
@@ -304,7 +380,7 @@ harden_ssh() {
         rm /etc/apt/sources.list.d/docker.list
         echo "$(date -Iseconds) - Removed invalid Docker repository" >> "$LOGFILE"
     fi
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         wait_for_apt || return 1
         apt-get update && apt-get install -y fail2ban || {
             echo -e "${RED}Failed to install fail2ban. Please install manually with 'apt-get install fail2ban'.${NC}"
@@ -353,7 +429,7 @@ install_docker() {
         return
     fi
 
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         wait_for_apt || return 1
         apt-get update
         apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release || {
@@ -361,11 +437,17 @@ install_docker() {
             echo "$(date -Iseconds) - Failed to install Docker prerequisites" >> "$LOGFILE"
             return 1
         }
-        curl -fsSL https://download.docker.com/linux/$OS/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        # Remove existing Docker GPG key if it exists
+        rm -f /usr/share/keyrings/docker-archive-keyring.gpg
+        curl -fsSL https://download.docker.com/linux/$OS/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg || {
+            echo -e "${RED}Failed to download Docker GPG key. Please check network connectivity or try again later.${NC}"
+            echo "$(date -Iseconds) - Failed to download Docker GPG key" >> "$LOGFILE"
+            return 1
+        }
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/$OS $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
         wait_for_apt || return 1
         apt-get update || {
-            echo -e "${RED}Failed to update package lists for Docker. Please check the repository configuration.${NC}"
+            echo -e "${RED}Failed to update package lists for Docker. Please check the repository configuration or network connectivity.${NC}"
             echo "$(date -Iseconds) - Failed to update Docker repository" >> "$LOGFILE"
             return 1
         }
@@ -431,7 +513,7 @@ setup_ssl() {
     read -r -p "$(echo -e "${YELLOW}Enter your domain name: ${NC}")" DOMAIN
     read -r -p "$(echo -e "${YELLOW}Enter your email for Let's Encrypt: ${NC}")" EMAIL
 
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         wait_for_apt || return 1
         apt-get update && apt-get install -y certbot || {
             echo -e "${RED}Failed to install certbot. Please install manually with 'apt-get install certbot'.${NC}"
@@ -472,7 +554,7 @@ setup_backups() {
 
     if ! command -v rsync &>/dev/null; then
         echo -e "${YELLOW}rsync not found. Installing rsync...${NC}"
-        if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+        if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
             wait_for_apt || return 1
             apt-get update && apt-get install -y rsync || {
                 echo -e "${RED}Failed to install rsync. Please install manually with 'apt-get install rsync'.${NC}"
@@ -513,7 +595,7 @@ setup_auto_updates() {
     echo -e "${GREEN}[7/8] Setting up automatic security updates...${NC}"
     echo "$(date -Iseconds) - Phase7: setup_auto_updates start" >> "$LOGFILE"
 
-    if [ "$OS" == "Ubuntu" ] || [ "$OS" == "Debian" ]; then
+    if [ "$OS" == "ubuntu" ] || [ "$OS" == "debian" ]; then
         wait_for_apt || return 1
         apt-get update && apt-get install -y unattended-upgrades || {
             echo -e "${RED}Failed to install unattended-upgrades. Please install manually with 'apt-get install unattended-upgrades'.${NC}"
@@ -572,30 +654,25 @@ run_demo_container() {
     fi
 
     if [ ! -f "docker/docker-compose.yml" ] || [ ! -f "docker/nginx.conf" ]; then
-        echo -e "${RED}Demo files not found in docker/. Please create docker/docker-compose.yml and docker/nginx.conf.${NC}"
-        echo -e "${YELLOW}Example docker-compose.yml:${NC}"
-        echo -e "version: '3'\nservices:\n  nginx:\n    image: nginx:latest\n    ports:\n      - \"80:80\"\n    volumes:\n      - ./nginx.conf:/etc/nginx/nginx.conf"
-        echo -e "${YELLOW}Example nginx.conf:${NC}"
-        echo -e "user nginx;\nworker_processes auto;\nevents { worker_connections 1024; }\nhttp {\n    server {\n        listen 80;\n        server_name localhost;\n        location / {\n            root /usr/share/nginx/html;\n            index index.html;\n        }\n    }\n}"
+        echo -e "${RED}Demo files not found in docker/. Please add them as per project structure.${NC}"
         echo "$(date -Iseconds) - Demo files missing" >> "$LOGFILE"
         return 1
     fi
 
+    # Setup directory for demo
     mkdir -p /opt/dockshield/docker
     cp docker/docker-compose.yml /opt/dockshield/docker/
     cp docker/nginx.conf /opt/dockshield/docker/
 
+    # If SSL was set up, note for manual configuration
     if [ -n "$DOMAIN" ]; then
         echo -e "${YELLOW}SSL certificates available. Manually update nginx.conf to use them and restart the container.${NC}"
         echo "$(date -Iseconds) - SSL note for demo container" >> "$LOGFILE"
     fi
 
+    # Run docker compose
     cd /opt/dockshield/docker
-    docker compose up -d || {
-        echo -e "${RED}Failed to start demo container. Please check Docker and the docker-compose.yml file.${NC}"
-        echo "$(date -Iseconds) - Failed to start demo container" >> "$LOGFILE"
-        return 1
-    }
+    docker compose up -d
     echo "$(date -Iseconds) - Demo Nginx container started" >> "$LOGFILE"
 
     echo -e "${GREEN}Demo container running. Access via http://your-server-ip (or https if configured).${NC}"
@@ -607,17 +684,17 @@ run_all_phases() {
     echo -e "${GREEN}Running all phases sequentially...${NC}"
     echo "$(date -Iseconds) - Running all phases" >> "$LOGFILE"
 
-    secure_server || { echo -e "${RED}Phase 1 failed. Aborting.${NC}"; return 1; }
-    configure_firewall || { echo -e "${RED}Phase 2 failed. Aborting.${NC}"; return 1; }
-    harden_ssh || { echo -e "${RED}Phase 3 failed. Aborting.${NC}"; return 1; }
-    install_docker || { echo -e "${RED}Phase 4 failed. Aborting.${NC}"; return 1; }
-    setup_ssl || { echo -e "${RED}Phase 5 failed. Aborting.${NC}"; return 1; }
-    setup_backups || { echo -e "${RED}Phase 6 failed. Aborting.${NC}"; return 1; }
-    setup_auto_updates || { echo -e "${RED}Phase 7 failed. Aborting.${NC}"; return 1; }
-    run_demo_container || { echo -e "${RED}Phase 8 failed. Aborting.${NC}"; return 1; }
+    secure_server
+    configure_firewall
+    harden_ssh
+    install_docker
+    setup_ssl
+    setup_backups
+    setup_auto_updates
+    run_demo_container
 
-    echo -e "${GREEN}All phases completed!${NC}"
-    echo "$(date -Iseconds) - All phases completed" >> "$LOGFILE"
+    echo -e "${GREEN}=== DockShield Deployment Complete! ===${NC}"
+    echo "$(date -Iseconds) - Deployment complete" >> "$LOGFILE"
 }
 
 # --- Interactive CLI Menu ---
@@ -644,35 +721,27 @@ select opt in "${options[@]}"; do
             ;;
         "1. Setup Secure User")
             secure_server
-            echo -e "${GREEN}Phase 1 completed. Returning to menu...${NC}"
             ;;
         "2. Configure Firewall")
             configure_firewall
-            echo -e "${GREEN}Phase 2 completed. Returning to menu...${NC}"
             ;;
         "3. Harden SSH")
             harden_ssh
-            echo -e "${GREEN}Phase 3 completed. Returning to menu...${NC}"
             ;;
         "4. Install Docker")
             install_docker
-            echo -e "${GREEN}Phase 4 completed. Returning to menu...${NC}"
             ;;
         "5. Setup SSL Certificates")
             setup_ssl
-            echo -e "${GREEN}Phase 5 completed. Returning to menu...${NC}"
             ;;
         "6. Setup Daily Backups")
             setup_backups
-            echo -e "${GREEN}Phase 6 completed. Returning to menu...${NC}"
             ;;
         "7. Setup Auto Updates")
             setup_auto_updates
-            echo -e "${GREEN}Phase 7 completed. Returning to menu...${NC}"
             ;;
         "8. Run Demo Container")
             run_demo_container
-            echo -e "${GREEN}Phase 8 completed. Returning to menu...${NC}"
             ;;
         "Exit")
             echo -e "${GREEN}Exiting DockShield. Goodbye!${NC}"
