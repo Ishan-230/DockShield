@@ -493,6 +493,18 @@ install_docker() {
     }
     echo "$(date -Iseconds) - Docker installed, user added to group" >> "$LOGFILE"
 
+    # Configure Docker to prefer IPv4
+    if [ ! -f /etc/docker/daemon.json ]; then
+        mkdir -p /etc/docker
+        echo '{"ip": "0.0.0.0", "ipv6": false}' > /etc/docker/daemon.json
+        systemctl restart docker || {
+            echo -e "${RED}Failed to restart Docker after configuring daemon.json. Please check the service status with 'systemctl status docker'.${NC}"
+            echo "$(date -Iseconds) - Failed to restart Docker after daemon.json configuration" >> "$LOGFILE"
+            return 1
+        }
+        echo "$(date -Iseconds) - Configured Docker to prefer IPv4" >> "$LOGFILE"
+    fi
+
     echo -e "${GREEN}Docker installation complete.${NC}"
     echo "$(date -Iseconds) - Phase4 complete" >> "$LOGFILE"
 }
@@ -653,10 +665,78 @@ run_demo_container() {
         return
     fi
 
-    if [ ! -f "docker/docker-compose.yml" ] || [ ! -f "docker/nginx.conf" ]; then
-        echo -e "${RED}Demo files not found in docker/. Please add them as per project structure.${NC}"
-        echo "$(date -Iseconds) - Demo files missing" >> "$LOGFILE"
+    # Check network connectivity to Docker registry
+    echo -e "${YELLOW}Checking network connectivity to Docker registry...${NC}"
+    if ! ping -c 2 registry-1.docker.io &>/dev/null; then
+        echo -e "${RED}Cannot reach Docker registry. Please check network connectivity or DNS settings.${NC}"
+        echo "$(date -Iseconds) - Failed to reach Docker registry" >> "$LOGFILE"
         return 1
+    fi
+    echo "$(date -Iseconds) - Docker registry connectivity confirmed" >> "$LOGFILE"
+
+    # Create docker directory if it doesn't exist
+    mkdir -p docker
+
+    # Create default docker-compose.yml if not present
+    if [ ! -f "docker/docker-compose.yml" ]; then
+        echo -e "${YELLOW}docker-compose.yml not found. Creating default file...${NC}"
+        cat > docker/docker-compose.yml << EOF
+services:
+  nginx:
+    image: nginx:latest
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+EOF
+        echo "$(date -Iseconds) - Created default docker-compose.yml" >> "$LOGFILE"
+    fi
+
+    # Create default nginx.conf if not present
+    if [ ! -f "docker/nginx.conf" ]; then
+        echo -e "${YELLOW}nginx.conf not found. Creating default file...${NC}"
+        cat > docker/nginx.conf << EOF
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                    '\$status \$body_bytes_sent "\$http_referer" '
+                    '"\$http_user_agent" "\$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    keepalive_timeout 65;
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        location / {
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+            try_files \$uri \$uri/ /index.html;
+        }
+
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+    }
+}
+EOF
+        echo "$(date -Iseconds) - Created default nginx.conf" >> "$LOGFILE"
     fi
 
     # Setup directory for demo
@@ -672,7 +752,11 @@ run_demo_container() {
 
     # Run docker compose
     cd /opt/dockshield/docker
-    docker compose up -d
+    docker compose up -d || {
+        echo -e "${RED}Failed to start Docker Compose. Please check Docker service and network connectivity with 'docker info' and 'docker pull nginx:latest'.${NC}"
+        echo "$(date -Iseconds) - Failed to start Docker Compose" >> "$LOGFILE"
+        return 1
+    }
     echo "$(date -Iseconds) - Demo Nginx container started" >> "$LOGFILE"
 
     echo -e "${GREEN}Demo container running. Access via http://your-server-ip (or https if configured).${NC}"
