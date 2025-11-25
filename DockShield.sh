@@ -1,13 +1,5 @@
 #!/bin/bash
-# ==============================================
-# DockShield Final v4 - "Option B" Port Fix
-# - Implements "Option B" architecture:
-#   - All projects get a high, random, free host port.
-#   - Caddy is ONLY used if a public domain is specified.
-#   - Stops port 80 conflicts.
-# - Fixes the "auto-wrapper" bug by improving project detection.
-# - TUI now correctly displays the assigned port.
-# ==============================================
+
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -43,9 +35,9 @@ cat <<'EOF'
 |____/ \___/ \___|_|\_\|____/|_| |_|_|\___|_|\__,_|
 EOF
 echo -e "${NC}"
-echo -e "${YELLOW}DockShield Final v4 — \"Option B\" Port Fix${NC}"
+echo -e "${YELLOW}DockShield ${NC}"
 echo "Log: $LOGFILE"
-log "DockShield v4 (Option B) started."
+log "DockShield started."
 
 # ---------- Basic checks ----------
 if [ "$EUID" -ne 0 ]; then
